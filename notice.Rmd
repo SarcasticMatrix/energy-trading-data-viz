@@ -1,0 +1,720 @@
+---
+title: "Power Arbitrage"
+author: "Théophile SCHMUTZ"
+date: "`r Sys.Date()`"
+output: 
+  html_document:
+    code_folding: hide
+    css: ./style.css
+    df_print: paged
+    highlight: tango
+    number_sections: no
+    theme: flatly
+    toc: yes
+    toc_float:
+      collapsed: no
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(fig.align = 'center',message=FALSE,warning=FALSE)
+```
+
+```{r message=FALSE,warning=FALSE}
+library(ggridges)
+library(ggplot2)
+library(colorspace)
+library(dplyr)
+library(quantmod)
+library(lubridate)
+library(tidyr)
+library(plotly)
+library(RColorBrewer)
+library(gridExtra)
+library(caret)
+library(fastDummies)
+library(pROC)
+library(PRROC)
+```
+
+Nous nous concentrons sur la prédiction de la direction des flux commerciaux d'électricité entre la France et ses pays voisins, en nous limitant spécifiquement au cas de l'Allemagne. Cette étude s'inscrit dans l'objectif d'établir un arbitrage géographique, un aspect essentiel du trading d'électricité.
+
+Lien du repo Github: <https://github.com/SarcasticMatrix/energy-trading-data-viz>
+
+# Importation et traitements des données
+
+## Données de prix de gaz
+
+On observe une explosion des prix du gaz (Future TTF) en 2022, principalement due aux difficultés des pays européens à se ravitailler en gaz naturel. Cette situation s'explique par la forte dépendance de l'Europe aux pipelines russes. Pour compenser, les pays européens ont dû se tourner vers le gaz naturel liquéfié (GNL), une solution nettement plus coûteuse. Le GNL implique un transport par tanker ainsi que des infrastructures spécifiques pour sa liquéfaction dans les ports de départ et sa regazéification dans les ports d'arrivée.
+
+```{r}
+getSymbols("NG=F", return.class = "data.frame", from="2021-01-01", to="2023-01-01")
+data_ng = `NG=F`
+chartSeries(data_ng, theme = chartTheme('white'), type='line', name = 'Prix des Futures Gaz Naturel')
+```
+
+En raison de son mix énergétique, la France est moins dépendante du gaz naturel, contrairement à des pays comme l'Allemagne ou les Pays-Bas. Par conséquent, l'explosion des prix du gaz a eu un impact relativement moindre en France comparé à d'autres nations européennes.
+
+```{r}
+data_ng <- data.frame(data_ng)
+data_ng$Date <- rownames(data_ng)
+names(data_ng) <- c("Open","High","Low","Close","Volume","Adjusted", "Date")
+data_ng %>% rmarkdown::paged_table()
+```
+
+Les données de la variable Adjusted montrent une répartition où les prix médians (4.880€/MWh) et moyens (5.132€/MWh) sont relativement proches, indiquant une distribution plutôt symétrique. Cependant, l'étendue des valeurs, allant de 2.446€/MWh à 9.680€/MWh, suggère une certaine dispersion ou présence de valeurs élevées.
+
+En ce qui concerne le volume, la moyenne (123,781) est légèrement supérieure à la médiane (117,789), ce qui pourrait indiquer une asymétrie vers les valeurs élevées. La plage de variation est importante, avec un minimum de 23,443 et un maximum de 338,968, suggérant une forte variabilité dans les volumes enregistrés.
+
+```{r}
+summary(data_ng$Adjusted);summary(data_ng$Volume)
+```
+
+## Données de RTE
+
+Les données exploitées proviennent de RTE, le gestionnaire du réseau de transport d'électricité en France, et incluent des informations sur la consommation et la production d'électricité. Cependant, il serait pertinent d'élargir l'analyse en intégrant des données de températures, qu'elles soient issues de prévisions ou d'observations actuelles, ainsi que des écarts passés entre ces deux mesures, afin de mieux comprendre leur impact sur la demande et l'offre.
+
+De plus, l'ajout de données provenant des marchés d'équilibrage pourrait enrichir l'analyse en capturant les ajustements nécessaires pour maintenir la stabilité du réseau. Il est également important de noter que seules les données du réseau français ont été utilisées Pour obtenir une vision plus complète, il serait judicieux d'intégrer également des données des réseaux allemand et belge.
+
+Les données sont disponibles ici [https://www.rte-france.com/eco2mix/telecharger-les-indicateurs](#0){.uri}.
+
+```{r}
+data2022 <- data.frame(read.csv("data/RTE-2022.csv")) 
+data2021 <- data.frame(read.csv("data/RTE-2021.csv")) 
+data_rte <- rbind(data2022, data2021)
+data_rte <- na.omit(data_rte)
+data_rte <- data_rte %>% select(-Périmètre, -Nature, -Prévision.J.1, -Prévision.J)
+data_rte%>%rmarkdown::paged_table()
+```
+
+Nous allons différencier les lignes en fonction des périodes de heures creuses et de heures pleines. Les heures creuses correspondent généralement aux plages horaires où la demande en électricité est plus faible, tandis que les heures pleines correspondent aux moments de la journée où la consommation est plus élevée. Cette distinction permet de mieux analyser les variations de la demande et de la production d’électricité en fonction des différents moments de la journée.
+
+```{r}
+data_rte$Heure <- as.POSIXct(data_rte$Heure, format = "%H:%M")
+data_rte$Année <- format(as.Date(data_rte$Date), "%Y")
+
+data_rte$Heure <- ifelse(
+  (format(data_rte$Heure, "%H") >= 8 & format(data_rte$Heure, "%H") < 12) |  # Heure pleine 8h-12h
+  (format(data_rte$Heure, "%H") >= 17 & format(data_rte$Heure, "%H") < 20),  # Heure pleine 17h-20h
+  "pleine",
+  "creuse"
+)
+```
+
+il est important de prendre en compte non seulement les périodes de heures creuses et pleines, mais aussi les variations selon les saisons. Ces éléments peuvent avoir un impact significatif sur la demande et la production d’électricité dans chaque pays, ce qui influencera les décisions d’arbitrage.
+
+Les saisons peuvent affecter différemment la production d’électricité, en fonction des ressources disponibles (comme l’hydroélectricité en hiver ou l’éolien en été), et la demande, notamment avec les pics de consommation en hiver en raison du chauffage ou en été avec la climatisation.
+
+```{r}
+get_saison <- function(date) {
+  mois <- as.numeric(format(as.Date(date), "%m"))
+  if (mois %in% c(12, 1, 2)) {
+    return("Hiver")
+  } else if (mois %in% c(3, 4, 5)) {
+    return("Printemps")
+  } else if (mois %in% c(6, 7, 8)) {
+    return("Été")
+  } else {
+    return("Automne")
+  }
+}
+data_rte$Saison <- sapply(data_rte$Date, get_saison)
+```
+
+## Récaptilulatif des données
+
+```{r}
+data <- inner_join(data_rte, data_ng)
+data.frame(variable = names(data),
+           classe = sapply(data, typeof),
+           row.names = NULL) %>% 
+rmarkdown::paged_table()
+```
+
+## Impacts du prix du gaz
+
+```{r}
+
+# Prix du gaz VS renouvelables
+renouvelables <- data %>%
+  select(Nucléaire, Eolien, Solaire, Hydraulique, Bioénergies, Adjusted) %>%
+  pivot_longer(cols = -Adjusted, names_to = "Variable", values_to = "Valeur")
+
+plot_production_by_renouvelable <- ggplot(renouvelables, aes(x = Adjusted, y = Valeur, color = Variable)) +  
+  geom_point(shape=1, size=0.5, alpha=0.7) +
+  labs(x = "Prix ajusté [$]", y = "Production [kW]", color = "Variable") +
+  scale_color_brewer(palette = "Set1") +
+  theme_gray()
+
+# Prix du gaz VS énergies fossiles
+fossiles <- data %>%
+  select(Fioul, Charbon, Gaz, Adjusted) %>%
+  pivot_longer(cols = -Adjusted, names_to = "Variable", values_to = "Valeur")
+
+plot_production_by_combustibles <- ggplot(fossiles, aes(x = Adjusted, y = Valeur, color = Variable)) +  
+  geom_point(shape=1, size=0.5, alpha=0.7) +
+  labs(x = "Prix ajusté [$]", y = "Production [kW]", color = "Variable") +
+  scale_color_brewer(palette = "Set1") +
+  theme_gray()
+
+# Prix du gaz VS Consommation totale 
+plot_consommation <- ggplot(data, aes(x = Adjusted, y = Consommation)) +  
+  geom_point(shape=1, size=0.5, alpha=0.7) +
+  labs(x = "Prix ajusté [$]", y = "Consommation [kW]") +
+  scale_color_brewer(palette = "Set1") +
+  theme_gray()
+
+grid.arrange(plot_production_by_combustibles, plot_production_by_renouvelable, plot_consommation, nrow = 3)
+```
+
+```{r}
+production_cols <- c("Nucléaire", "Eolien", "Solaire", "Hydraulique", "Bioénergies", "Fioul", "Charbon", "Gaz")
+data_selected <- data %>%
+  select(all_of(production_cols), Adjusted, High, Low)
+
+# Calcul des matrices de corrélations
+cor_adjusted <- cor(data_selected[, production_cols], data_selected$Adjusted, use = "complete.obs")
+cor_high <- cor(data_selected[, production_cols], data_selected$High, use = "complete.obs")
+cor_low <- cor(data_selected[, production_cols], data_selected$Low, use = "complete.obs")
+
+# Conversion des matrices en dataframes
+cor_adjusted_df <- data.frame(Moyen_Production = rownames(cor_adjusted), Correlation_with_Adjusted = round(cor_adjusted[, 1], 2))
+cor_high_df <- data.frame(Moyen_Production = rownames(cor_high), Correlation_with_High = round(cor_high[, 1], 2))
+cor_low_df <- data.frame(Moyen_Production = rownames(cor_low), Correlation_with_Low = round(cor_low[, 1], 2))
+
+cor_dataframe <- cor_adjusted_df %>%
+  left_join(cor_high_df, by = "Moyen_Production") %>%
+  left_join(cor_low_df, by = "Moyen_Production")
+names(cor_dataframe) <- c("Moyen de production", "Adjusted", "High", "Low")
+cor_dataframe %>% rmarkdown::paged_table()
+```
+
+On peut en effet observer que la corrélation entre le prix du gaz et la consommation de gaz semble nulle. Cela s'explique par le fait que la consommation d'électricité est souvent considérée comme inélastique. Autrement dit, la demande en électricité reste relativement stable, indépendamment des variations de prix du gaz. En conséquence, même lorsque le prix du gaz augmente, les producteurs d'électricité continuent de faire fonctionner leurs centrales à gaz pour répondre à la demande, car la consommation d'électricité ne baisse pas suffisamment pour rendre économiquement plus rentable de réduire leur production.
+
+Cette inélasticité de la demande en électricité, combinée au rôle essentiel du gaz dans la production d'électricité, explique pourquoi les producteurs n'hésitent pas à activer les centrales à gaz, même lorsque les prix du gaz sont élevés, ce qui peut atténuer la relation directe attendue entre le prix du gaz et sa consommation.
+
+La production d’électricité nucléaire montre une corrélation négative forte avec le prix ajusté (-0,78) ainsi qu’avec les valeurs maximale (-0,77) et minimale (-0,79) des futures gaz TTF. Cela s’explique par le fait que le nucléaire offre une production stable et à faible coût marginal, réduisant la dépendance aux sources énergétiques plus coûteuses comme le gaz. Ainsi, lorsque la production nucléaire est élevée, les besoins en gaz pour la production d’électricité diminuent, ce qui entraîne une baisse des prix sur les marchés de l’énergie.
+
+Dans le cas de l’hydroélectricité, la corrélation modérément négative avec le prix ajusté (-0,44) ainsi qu’avec les valeurs maximale (-0,43) et minimale (-0,44) des futures gaz TTF peut s’expliquer par la flexibilité et le coût compétitif de cette source d’énergie. Lorsque la production hydraulique augmente, elle réduit la nécessité de recourir à des moyens de production plus coûteux, comme le gaz, ce qui exerce une pression à la baisse sur les prix de l’électricité. Cependant, cette corrélation est moins forte que pour le nucléaire, car la disponibilité de l’hydroélectricité dépend des conditions climatiques (comme le niveau des réservoirs ou des précipitations), ce qui limite son rôle stabilisateur dans certaines périodes.
+
+## Echange commerciaux
+
+Quelques statistiques des échangs commerciaux électriques franco-allemands:
+
+```{r}
+summary(data$Ech..comm..Allemagne.Belgique)
+```
+
+Les statistiques des échanges commerciaux électriques franco-allemands montrent une distribution intéressante des flux d'électricité entre la France et l'Allemagne. Le minimum est de -8027MW, ce qui indique un export net de la France vers l'Allemagne à ce moment-là. À l'inverse, le maximum de 9767MW représente un export net de l'Allemagne vers la France.
+
+La médiane de 2316MW reflète un échange typique entre les deux pays, où la France exporte généralement vers l'Allemagne. La moyenne de 2011.6MW est relativement proche de la médiane, suggérant une certaine symétrie dans les échanges, mais avec une légère tendance à des exportations de la France vers l'Allemagne.
+
+Les premiers quartiles (1er quartile à -190.2MW) et troisième quartiles (3e quartile à 4264.0MW) montrent la variabilité des flux, avec des périodes où l'échange est plutôt faible voire négatif, et d'autres où l'échange est fortement positif, avec des pics d'exportation. Ces valeurs témoignent de la flexibilité et des fluctuations des échanges commerciaux d'électricité en fonction des besoins de chaque pays.
+
+```{r}
+data_nuclaire <- data
+data_nuclaire$Datetime <- as.POSIXct(paste(data_nuclaire$Date, data_nuclaire$Heures), format="%Y-%m-%d %H:%M")
+
+# Moyenne journalière
+data_nuclaire_daily <- data_nuclaire %>%
+  group_by(Date) %>%
+  summarise(Daily_Avg = mean(Nucléaire, na.rm = TRUE))
+
+# Moyenne mensuelle
+data_nuclaire_monthly <- data_nuclaire %>%
+  mutate(Month = format(as.Date(Date), "%Y-%m")) %>%  # Extraire l'année et le mois
+  group_by(Month) %>%
+  summarise(Monthly_Avg = mean(Nucléaire, na.rm = TRUE))
+
+ggplot(data=data_nuclaire, mapping=aes(x=Datetime, y=Nucléaire)) +
+  geom_point(size=0.1, color="darkblue") +
+  geom_line(data=data_nuclaire_daily, mapping=aes(x=as.POSIXct(Date), y=Daily_Avg, color="Journalière"), size=0.8) +
+  geom_step(data=data_nuclaire_monthly, mapping=aes(x=as.POSIXct(paste0(Month, "-01")), y=Monthly_Avg, color="Mensuelle"), size=0.8) + 
+  labs(
+    x="Date",
+    y="Production Nucléaire (MW)",
+    title="Production Nucléaire en 2021 et 2022",
+    subtitle="avec moyenne journalière et mensuelle",
+    color="Période" 
+  ) +
+  scale_x_datetime(
+    date_breaks = "4 month",  
+    labels = scales::date_format("%b %Y") 
+  ) +
+  theme_minimal()
+
+```
+
+À noter que la France est historiquement un pays exportateur net d'électricité, grâce à sa forte capacité de production, notamment nucléaire. Cependant, en 2022, des problèmes techniques sur ses centrales nucléaires ont significativement réduit sa production, obligeant le pays à importer davantage d'électricité. Cela se reflète dans les statistiques des échanges commerciaux avec l'Allemagne (la médiane et la moyenne des échanges sont positives, indiquant une prédominance des importations sur les exportations), ainsi que sur le graphique précédent, où l'on peut clairement voir la production nucléaire chuter en février 2022.
+
+```{r}
+ggplot(
+  data, 
+  aes(x = `Ech..comm..Allemagne.Belgique`, y = `Heures`, fill = 0.5 - abs(0.5 - stat(ecdf)))) +
+  stat_density_ridges(geom = "density_ridges_gradient", calc_ecdf = TRUE, scale=1, quantile_lines = TRUE, alpha = 0.75, quantiles = c(0.05, 0.5, 0.95)) +
+  scale_fill_gradient(low = "white", high = "darkred",
+                      name = "Tail prob.")+
+  labs(title = "Densité des échanges commerciaux sur la journée",
+       subtitle = "Avec les quantiles 5%, 50% et 95%",
+       x = "Echanges commerciaux [GW]",
+       y = "Heures",
+       fill = "Valeur") +
+  theme(axis.text.y = element_text(size = 6))
+```
+
+Le graphique montre la distribution horaire des échanges commerciaux d'électricité entre la France et l'Allemagne. Une tendance marquée d'importations françaises vers l'Allemagne est visible, avec des valeurs positives dominantes, surtout en heures creuses. En revanche, en heures pleines, les échanges tendent à s'équilibrer, avec des densités centrées autour de zéro, voire légèrement négatives, indiquant des exprotations de la France. La coloration rouge dans les queues révèle des variations plus importantes, signalant des périodes d’échanges extrêmes, potentiellement liées à des pics de demande ou de production. Ces fluctuations reflètent l'impact des rythmes de consommation et des capacités de production renouvelable.
+
+```{r}
+ggplot(
+  data, 
+  aes(x = `Ech..comm..Allemagne.Belgique`, y = `Heure`, fill = 0.5 - abs(0.5 - stat(ecdf)))) +
+  stat_density_ridges(geom = "density_ridges_gradient", calc_ecdf = TRUE, scale=1, quantile_lines = TRUE, alpha = 0.75, quantiles = c(0.05, 0.5, 0.95)) +
+  scale_fill_gradient(low = "white", high = "darkred",
+                      name = "Tail prob.")+
+  labs(title = "Densité des échanges commerciaux selon les heures",
+       subtitle = "Avec les quantiles 5%, 50% et 95%",
+       x = "Echanges commerciaux [GW]",
+       y = "Heures",
+       fill = "Valeur")
+```
+
+# Modèle
+
+Nous définissons un modèle XGBoost pour prédire uniquement le sens des échanges commerciaux et non leur valeur exacte (en MW). Cette simplification repose sur une distinction importante : si l'objectif était de prédire la valeur des flux en MW, il serait nécessaire de modéliser également notre participation active sur le marché, en tenant compte de notre rôle potentiel de "price maker" (influence directe sur les prix du marché) plutôt que de "price taker" (participant passif acceptant les prix du marché). En se concentrant sur la prédiction du sens des flux, nous adoptons une approche largement répandue parmi les praticiens, car elle permet d'optimiser des stratégies commerciales sans s'engager dans des modélisations plus complexes, souvent très sensibles aux incertitudes liées aux prix et volumes.
+
+```{r}
+colonnes_a_exclure <- c("Ech..comm..Angleterre",
+                        "Ech..comm..Espagne",
+                        "Ech..comm..Italie",
+                        "Ech..comm..Suisse",
+                        "Ech..physiques",
+                        "Date",
+                        "Heures")
+
+data_clean <- data[, !(names(data) %in% colonnes_a_exclure)]
+X <- data_clean[, !(names(data_clean) %in% c("Ech..comm..Allemagne.Belgique"))]
+Y <- data[, "Ech..comm..Allemagne.Belgique", drop = FALSE]
+Y$Ech..comm..Allemagne.Belgique <- ifelse(Y$Ech..comm..Allemagne.Belgique > 0, 1, 0)
+```
+
+Un Y positif indique que la France importe de l’électricité depuis l’Allemagne, et réciproquement, un Y négatif signifie que la France exporte de l’électricité vers l’Allemagne. Dans notre modèle, nous attribuons la valeur 1 lorsque la France exporte vers l’Allemagne, et 0 dans les autres cas (notamment lorsqu’elle importe). Cette codification binaire permet de simplifier la tâche de classification en se concentrant uniquement sur la direction des flux commerciaux.
+
+## Train et Test
+
+```{r}
+set.seed(42)
+custom <- trainControl(
+  method = 'repeatedcv',
+  number = 5,  
+  repeats = 3,  
+  summaryFunction = defaultSummary,
+)
+
+# Split des données
+train_index <- createDataPartition(Y$Ech..comm..Allemagne.Belgique, p = 0.7, list = FALSE)
+X_train <- X[train_index, ]
+X_test <- X[-train_index, ]
+Y_train <- Y[train_index, , drop = FALSE]
+Y_test <- Y[-train_index, , drop = FALSE]
+
+# Application du one-hot encoding
+X_train_encoded <- dummy_cols(
+  X_train,
+  remove_first_dummy = TRUE,    
+  remove_selected_columns = TRUE
+)
+X_test_encoded <- dummy_cols(
+  X_test,
+  remove_first_dummy = TRUE,
+  remove_selected_columns = TRUE
+)
+
+# Conversion des dataframes encodés en matrices numériques pour XGBoost
+X_train_matrix <- as.matrix(X_train_encoded)
+X_test_matrix <- as.matrix(X_test_encoded)
+```
+
+## Hyperparamètrage
+
+```{r}
+# Grille d'hyperparamètres pour XGBoost
+grid <- expand.grid(
+  nrounds = c(100),           # Nombre d'itérations
+  subsample = c(0.7),         # Fraction des lignes échantillonnées
+  gamma = c(1),               # Réduction minimale de perte
+  colsample_bytree = c(1),    # Fraction des colonnes échantillonnées
+  min_child_weight = c(1),    # Poids minimum des enfants
+  
+  max_depth = c(4, 6, 8),     # Profondeur maximale
+  eta = c(0.1, 0.3, 0.5)      # Taux d'apprentissage
+)
+```
+
+## Cross-Validation
+
+```{r}
+library(xgboost)
+xgb_model <- train(
+  x = X_train_matrix,                                    # Features
+  y = as.factor(Y_train$Ech..comm..Allemagne.Belgique),  # Cible
+  method = "xgbTree",      
+  trControl = custom,      
+  tuneGrid = grid,        
+  metric = "Accuracy"                                    # Optimisation pour l'accuracy
+)
+
+xgb_model$bestTune
+```
+
+```{r}
+# Récupérer les meilleurs hyperparamètres après cv
+best_params <- xgb_model$bestTune
+
+# Entraîner à nouveau le modèle sur tout le jeu d'entraînement avec les meilleurs hyperparamètres
+fitted_xgb_model <- xgboost(
+  data = X_train_matrix,              
+  label = Y_train$Ech..comm..Allemagne.Belgique, 
+  nrounds = best_params$nrounds,           
+  subsample = best_params$subsample,         
+  gamma = best_params$gamma,              
+  colsample_bytree = best_params$colsample_bytree,    
+  min_child_weight = best_params$min_child_weight,   
+  max_depth = best_params$max_depth,    
+  eta = best_params$eta,
+  verbose = 0, # pour ne pas afficher le détail
+  objective = "binary:logistic"
+)
+```
+
+# Treshold tuning
+
+## Test du modèle
+
+```{r}
+# Prédictions sur l'ensemble du test
+predictions_raw <- predict(fitted_xgb_model, newdata = X_test_matrix, type = "raw")
+probabilities <- 1 / (1 + exp(-predictions_raw))
+predictions_class <- as.factor(ifelse(probabilities > 0.7, 1, 0))
+
+# Matrice de confusion
+confusionMatrix(predictions_class, as.factor(Y_test$Ech..comm..Allemagne.Belgique))
+```
+
+## Courbe ROC
+
+```{r}
+# Calculer la courbe ROC
+roc_curve <- roc(Y_test$Ech..comm..Allemagne.Belgique, probabilities)
+roc_data <- data.frame(
+  FPR = 1 - roc_curve$specificities,    # Taux de faux positifs (1 - spécificité)
+  TPR = roc_curve$sensitivities,    # Taux de vrais positifs (sensibilité)
+  thresholds = roc_curve$thresholds
+)
+roc_curve$thresholds <- roc_curve$thresholds[-1]
+cat("AUC: ",auc(roc_curve))
+
+# Plot de la courbe ROC
+ggplot(roc_data, aes(x = FPR, y = TPR)) +
+  geom_line(color = "darkred", size = 0.7) +
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed", color = "gray") + # Ligne de référence
+  labs(title = "Courbe ROC", 
+       x = "Taux de faux positifs", 
+       y = "Taux de vrais positifs") +    
+  theme_minimal() +                               
+  theme(
+    plot.title = element_text(hjust = 0.5),          
+    axis.title = element_text(size = 12),           
+    axis.text = element_text(size = 10) 
+  )
+```
+
+On obtient une courbe ROC avec un AUC d’environ 0.99, ce qui témoigne de bonne performance prédictive du modèle. Un AUC proche de 1 indique que le modèle est capable de discriminer efficacement entre les classes positives et négatives, avec un très faible taux de faux positifs et un taux élevé de vrais positifs. Cette précision est particulièrement prometteuse dans le cadre de la prévision des flux commerciaux, car elle suggère que le modèle peut fournir des prédictions fiables, un atout crucial pour déterminer des arbitrages géographiques.
+
+On détermine maitenant le treshold optimale pour maximiser l'accuracy.
+
+```{r}
+# Indice de Youden
+youden_index <- roc_curve$sensitivities + roc_curve$specificities - 1
+
+# Seuil avec le meilleur indice de Youden
+best_threshold_youden_index <- which.max(youden_index)
+best_threshold_youden <- roc_curve$thresholds[best_threshold_youden_index]
+
+cat("Le meilleur seuil (basé sur l'indice de Youden) est :", best_threshold_youden, "\n")
+```
+
+On devrait obtenir le même résultat trouvant le point le plus en haut à gauche:
+
+```{r}
+# élimine les +/-INF
+valid_indices <- which(!is.infinite(roc_curve$sensitivities) & !is.infinite(roc_curve$specificities))
+
+# Calculer la distance à la diagonale
+distance_to_top_left <- sqrt(roc_data$TPR[valid_indices]^2 + (1 - roc_data$FPR[valid_indices])^2)
+
+# indice du seuil avec la distance maximale
+best_threshold_top_left_index <- valid_indices[which.max(distance_to_top_left)]
+best_threshold_top_left <- roc_curve$thresholds[best_threshold_top_left_index]
+
+cat("Le meilleur seuil (point le plus en haut à gauche) est :", best_threshold_top_left, "\n")
+```
+
+On trouve bien le même treshold.
+
+```{r}
+ggplot(roc_data, aes(x = FPR, y = TPR)) +
+  geom_line(color = "darkblue", size = 0.7) +             
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed", color = "gray") + 
+  
+  # Youden
+  geom_vline(aes(xintercept = roc_data$FPR[best_threshold_youden_index], color = "Youden"), 
+             linetype = "dotted") + 
+  geom_point(aes(x = roc_data$FPR[best_threshold_youden_index], 
+                 y = roc_data$TPR[best_threshold_youden_index]), 
+             color = "darkred", size = 3, shape = 20) +
+  
+  # Top left
+  geom_vline(aes(xintercept = roc_data$FPR[best_threshold_top_left_index], color = "Top left"), 
+             linetype = "dotted") + 
+  geom_point(aes(x = roc_data$FPR[best_threshold_top_left_index], 
+                 y = roc_data$TPR[best_threshold_top_left_index]), 
+             color = "darkgreen", size = 3, shape = 20) +
+
+  labs(title = "Courbe ROC", 
+       x = "Taux de faux positifs", 
+       y = "Taux de vrais positifs") +      
+  theme_minimal() +                                
+  theme(
+    plot.title = element_text(hjust = 0.5),          
+    axis.title = element_text(size = 12),            
+    axis.text = element_text(size = 10),
+    legend.position = "bottom"
+  ) +
+  scale_color_manual(values = c("Youden" = "darkred", "Top left" = "darkgreen")) + 
+  guides(color = guide_legend(title = "Seuils"))
+```
+
+On considère alors ce treshold optimal pour prédire le sens des échanges commerciaux.
+
+```{r}
+best_threshold <- best_threshold_youden
+predictions_class <- ifelse(probabilities >= best_threshold, 1, 0)
+confusionMatrix(as.factor(predictions_class), as.factor(Y_test$Ech..comm..Allemagne.Belgique))
+```
+
+## Courbe Precision-Recall
+
+```{r}
+# Calculer la courbe Precision-Recall
+pr_curve <- pr.curve(scores.class0 = probabilities, weights.class0 = Y_test$Ech..comm..Allemagne.Belgique, curve = TRUE)
+pr_data <- data.frame(
+  Recall = pr_curve$curve[, 1],    # Recall
+  Precision = pr_curve$curve[, 2]  # Precision
+)
+
+ggplot(pr_data, aes(x = Recall, y = Precision)) +
+  geom_line(color = "darkblue", size = 0.7) +             
+  geom_abline(slope = -1, intercept = 1, linetype = "dashed", color = "gray") + 
+  
+  # Youden
+  geom_vline(aes(xintercept = pr_data$Recall[best_threshold_youden_index], color = "Youden"), 
+             linetype = "dotted") + 
+  geom_point(aes(x = pr_data$Recall[best_threshold_youden_index], 
+                 y = pr_data$Precision[best_threshold_youden_index]), 
+             color = "darkred", size = 3, shape = 20) + 
+  
+  labs(title = "Precision - Recall curve", 
+       x = "Recall", 
+       y = "Precision") +      
+  theme_minimal() +                                
+  theme(
+    plot.title = element_text(hjust = 0.5),          
+    axis.title = element_text(size = 12),            
+    axis.text = element_text(size = 10),
+    legend.position = "bottom"
+  ) +
+  scale_color_manual(values = c("Youden" = "darkred")) + 
+  guides(color = guide_legend(title = "Seuils"))
+```
+
+# Feature Importance et analyse des résidus
+
+## Feature importance
+
+Le graphique montre l'importance relative des différentes variables utilisées par le modèle pour prédire les flux commerciaux.
+
+```{r}
+importance <- xgb.importance(model = fitted_xgb_model)
+xgb.plot.importance(importance)
+```
+
+1.  Variables les plus influentes :
+
+    -   Consommation est de loin la variable la plus déterminante, reflétant l'impact direct de la demande énergétique sur les échanges commerciaux. Une forte consommation en France ou en Allemagne peut inverser les flux commerciaux.
+
+    -   Nucléaire et Hydraulique (fil de l'eau/éclusée) jouent également un rôle clé, soulignant l'influence des sources de production électrique stables ou renouvelables sur les exportations et importations.
+
+2.  Facteurs secondaires :
+
+    -   Volume (probablement lié aux capacités d'échanges ou de réseau) : la disponibilité ou le prix du gaz influence modérément les décisions commerciales.
+
+3.  Influence environnementale et temporelle :
+
+    -   Des variables comme le Taux de CO2 ont un impact plus faible, suggérant que les émissions, bien que pertinentes, sont moins décisives dans le modèle.
+    -   Les facteurs temporels, tels que Heure pleine, Saison hiver ou Saison été, ont une faible importance. Cela montre que l’impact des saisons et des cycles horaires est déjà indirectement capté par des variables comme la consommation.
+
+## Analyse des résidus
+
+On sélectionne les lignes où le modèle s'est trompé.
+
+```{r}
+X_test <- data[-train_index, ]
+X_test$Prediction_Status <- ifelse(predictions_class == Y_test$Ech..comm..Allemagne.Belgique, "Correcte", "Incorrecte")
+```
+
+```{r, fig.height=9}
+importance_sorted <- importance[order(importance$Gain, decreasing = TRUE), ]
+top_10_features <- head(importance_sorted, 10)
+top_10_feature_names <- top_10_features$Feature
+top_10_data <- X_test[, top_10_feature_names]
+top_10_data$Prediction_Status <- X_test$Prediction_Status
+top_10_data$Ech_comm_Allemagne_Belgique <- X_test$`Ech..comm..Allemagne.Belgique`
+top_10_data_long <- top_10_data %>%
+  gather(key = "Variable", value = "Value", -Prediction_Status, -Ech_comm_Allemagne_Belgique)
+
+# Visualisation
+ggplot(top_10_data_long, aes(x = Value, y = Ech_comm_Allemagne_Belgique, color = Prediction_Status)) +
+  geom_point(data = subset(top_10_data_long, Prediction_Status == "Correcte"), alpha = 0.3) + 
+  geom_point(data = subset(top_10_data_long, Prediction_Status == "Incorrecte"), alpha = 0.7) + 
+  facet_wrap(~ Variable, ncol = 2, scales = "free_x") + 
+  labs(title = "Visualisation des prédictions correctes et incorrectes pour les 10 variables les plus importantes",
+       x = "Valeur de la variable [MW]",
+       y = "Echanges commerciaux [MW]") +
+  scale_color_manual(values = c("Correcte" = "darkgray", "Incorrecte" = "darkred")) +
+  theme_minimal() +
+  theme(legend.position = "bottom")
+```
+
+A priori, le modèle a l'air de se tromper de sens plus souvent sur les petites valeurs du flux d'électricité dans le câble. Cela serait plutôt logique, car les deux zones électriques sont déjà en équilibre avant même de faire jouer les interconnexions entre la zone française et belgo-allemande. Dans ce cas, les variations de flux sont faibles et peuvent être davantage influencées par des facteurs aléatoires ou des incertitudes dans les données d'entrée, rendant la prédiction plus difficile. Cela suggère que le modèle pourrait bénéficier d'une meilleure prise en compte des dynamiques spécifiques à ces situations d'équilibre.
+
+Peut-être aussi que le modèle se trompe plus souvent en fonction de modalités spécifiques de production, comme une forte proportion d'énergies renouvelables dans le mix énergétique. Ces modalités peuvent être influencées par des conditions particulières qui varient selon le moment de la journée (par exemple, la production solaire est maximale en milieu de journée) ou selon la saison (les énergies éoliennes étant plus importantes en hiver dans certaines régions). Cela suggère qu'une analyse approfondie des erreurs du modèle pourrait révéler des biais liés à ces variations temporelles et saisonnières, et orienter des pistes d'amélioration, comme l'intégration d'indicateurs supplémentaires ou une segmentation des données pour mieux refléter ces dynamiques.
+
+```{r}
+erreurs <- X_test[X_test$Prediction_Status == "Incorrecte", ]
+comptage_heure <- table(erreurs$Heure)
+proportion_heure <- round(prop.table(comptage_heure), 2)
+resultats_heure <- data.frame(
+  Heure = names(comptage_heure),
+  Comptage = as.vector(comptage_heure),
+  Proportion = as.vector(proportion_heure)
+)
+resultats_heure %>% rmarkdown::paged_table()
+
+ggplot(
+  X_test[X_test$Prediction_Status == "Incorrecte", ], 
+  aes(x = `Ech..comm..Allemagne.Belgique`, y = `Heure`, fill = 0.5 - abs(0.5 - stat(ecdf)))) +
+  stat_density_ridges(
+    geom = "density_ridges_gradient", 
+    calc_ecdf = TRUE, scale=1, quantile_lines = TRUE, alpha = 0.75, quantiles = c(0.05, 0.5, 0.95), 
+    jittered_points = TRUE, position = position_points_jitter(width = 0.05, height = 0), 
+    point_shape = '|', point_size = 3, point_alpha = 1, alpha = 0.7) + 
+  scale_fill_gradient(low = "white", high = "darkred",
+                      name = "Tail prob.")+
+  labs(title = "Densité des échanges commerciaux sur la journée",
+       subtitle = "Avec les quantiles 5%, 50% et 95%",
+       x = "Echanges commerciaux [GW]",
+       y = "Heures",
+       fill = "Valeur") +
+  theme(axis.text.y = element_text(size = 6))
+```
+
+Les erreurs dans le modèle sont largement dominées par les heures creuses, représentant 84 % des erreurs, tandis que seulement 16 % des erreurs surviennent pendant les heures pleines. Cela pourrait suggérer que le modèle a plus de difficulté à prédire avec précision pendant les heures creuses.
+
+En heures creuses, la demande d'électricité est souvent plus stable et plus faible, ce qui réduit la variabilité du flux d'électricité. Le modèle, en raison de la grande variabilité et de la large plage de valeurs dans les données, n'est pas conçu pour capturer efficacement ces périodes de faible activité. Ainsi, il peut éprouver des difficultés à prédire avec précision les fluctuations mineures. Le modèle tend à se concentrer davantage sur les périodes de forte demande, où les variations sont plus marquées et où les échanges commerciaux sont plus tranchés, ce qui rend la prédiction plus facile et plus précise.
+
+En soi, le fait que le modèle se trompe plus souvent en heures creuses n’a pas de conséquences majeures d’un point de vue opérationnel. En effet, le prix du MWh sur les marchés électriques est généralement beaucoup plus élevé en heures pleines qu’en heures creuses, rendant les erreurs moins coûteuses en termes financiers durant ces périodes. Cependant, cette limitation reste une piste d’amélioration..
+
+Comme le montre clairement le graphique suivant, la distribution des échanges commerciaux pour lesquels le modèle se trompe est nettement plus centrée et regroupée autour de zéro.
+
+```{r}
+data_hist <- data.frame(
+  Value = c(X_test[X_test$Prediction_Status == "Incorrecte", ]$`Ech..comm..Allemagne.Belgique`,
+            X_test[X_test$Prediction_Status == "Correcte", ]$`Ech..comm..Allemagne.Belgique`),
+  Prediction_Status = c(rep("Incorrecte", sum(X_test$Prediction_Status == "Incorrecte")),
+                        rep("Correcte", sum(X_test$Prediction_Status == "Correcte")))
+)
+
+mean_incorrecte <- mean(X_test[X_test$Prediction_Status == "Incorrecte", ]$`Ech..comm..Allemagne.Belgique`, na.rm = TRUE)
+mean_correcte <- mean(X_test[X_test$Prediction_Status == "Correcte", ]$`Ech..comm..Allemagne.Belgique`, na.rm = TRUE)
+
+ggplot(data_hist, aes(x = Value, fill = Prediction_Status, color = Prediction_Status)) +
+  geom_histogram(aes(y = ..density..), alpha = 0.1, position = "identity", bins = 30) +
+  geom_density(alpha = 0.5, size = 1) +
+  geom_vline(xintercept = mean_incorrecte, color = "darkred", linetype = "dotted", size = 1) +
+  geom_vline(xintercept = mean_correcte, color = "darkblue", linetype = "dotted", size = 1) +
+  scale_fill_manual(values = c("Incorrecte" = "darkred", "Correcte" = "darkblue")) +
+  scale_color_manual(values = c("Incorrecte" = "darkred", "Correcte" = "darkblue")) +
+  labs(title = "Comparaison des distributions avec histogrammes et KDE",
+       x = "Ech. comm. Allemagne-Belgique [MW]",
+       y = "Densité") +
+  theme_minimal()
+```
+
+# Conclusion et extensions
+
+Pour conclure, le modèle montre des performances tout à fait satisfaisantes, même sans disposer de la quantité idéale de données qui pourrait améliorer encore ses prédictions. Cependant, nous avons constaté une limitation notable : le modèle ne parvient pas à bien prédire lorsque les échanges commerciaux sont proches de zéro. Cela peut s'expliquer par l'absence de signaux clairs dans ces situations, où les flux sont instables ou équilibrés, rendant la classification plus difficile. Pour remédier à ce problème, il serait pertinent d'enrichir les données avec des variables supplémentaires susceptibles de capturer les dynamiques de marché autour de ces valeurs faibles.
+
+Ainsi, pour améliorer les performances du modèle, notamment durant les heures creuses, il serait essentiel de disposer d’un volume de données plus important. Les premières données à intégrer devraient être celles du marché allemand. Ensuite, il serait pertinent d’ajouter des prévisions sur des variables clés telles que la consommation, les productions et la température. Enfin, l’intégration des erreurs passées des prévisions permettrait au modèle de mieux appréhender les incertitudes et les biais, ce qui pourrait significativement améliorer la précision dans les situations où les échanges sont proches de zéro.
+
+On pourrait également intégrer des données de marchés pour affiner encore davantage les prédictions. Ces données incluraient les prix et volumes des marchés intraday, day-ahead, ainsi que ceux des marchés d'ajustement. Ces informations seraient accompagnées de leurs prévisions associées et des erreurs passées sur ces prévisions. Cela permettrait au modèle de mieux capturer les dynamiques de prix et d'offre/demande en temps réel, ainsi que d’identifier les écarts entre attentes et réalité.
+
+# Annexe
+
+```{r}
+# Créer un dataframe avec les valeurs pour "Incorrecte" et toutes les données
+data_hist <- data.frame(
+  Value = c(X_test[X_test$Prediction_Status == "Incorrecte", ]$`Ech..comm..Allemagne.Belgique`,
+            X_test$`Ech..comm..Allemagne.Belgique`),
+  Prediction_Status = c(rep("Incorrecte", sum(X_test$Prediction_Status == "Incorrecte")),
+                        rep("Toutes", nrow(X_test)))
+)
+
+# Moyenne des valeurs pour les prédictions incorrectes et pour toutes les données
+mean_incorrecte <- mean(X_test[X_test$Prediction_Status == "Incorrecte", ]$`Ech..comm..Allemagne.Belgique`, na.rm = TRUE)
+mean_toutes <- mean(X_test$`Ech..comm..Allemagne.Belgique`, na.rm = TRUE)
+
+# Génération du graphique
+ggplot(data_hist, aes(x = Value, fill = Prediction_Status, color = Prediction_Status)) +
+  geom_histogram(aes(y = ..density..), alpha = 0.1, position = "identity", bins = 30) +
+  geom_density(alpha = 0.5, size = 1) +
+  geom_vline(xintercept = mean_incorrecte, color = "darkred", linetype = "dotted", size = 1) +
+  geom_vline(xintercept = mean_toutes, color = "darkgreen", linetype = "dotted", size = 1) +
+  scale_fill_manual(values = c("Incorrecte" = "darkred", "Toutes" = "darkgreen")) +
+  scale_color_manual(values = c("Incorrecte" = "darkred", "Toutes" = "darkgreen")) +
+  labs(title = "Comparaison des distributions avec histogrammes et KDE",
+       x = "Ech. comm. Allemagne-Belgique [MW]",
+       y = "Densité") +
+  theme_minimal()
+```
+
+Pour voir en plus gros si besoin:
+
+```{r}
+importance <- xgb.importance(model = fitted_xgb_model)
+importance_sorted <- importance[order(importance$Gain, decreasing = TRUE), ]
+top_10_features <- head(importance_sorted, 10)
+top_10_feature_names <- top_10_features$Feature
+
+# Visualiser les prédictions correctes et incorrectes pour les 10 variables les plus importantes
+for (feature in top_10_feature_names) {
+  p <- ggplot(X_test, aes_string(x = feature, y = "`Ech..comm..Allemagne.Belgique`", color = "Prediction_Status")) +
+    geom_point(data = subset(X_test, Prediction_Status == "Correcte"), alpha = 0.3) + 
+    geom_point(data = subset(X_test, Prediction_Status == "Incorrecte"), alpha = 0.7) + 
+    labs(title = paste("Visualisation des prédictions correctes et incorrectes pour", feature),
+         x = feature,
+         y = "Echanges commerciaux [MW]") +
+    scale_color_manual(values = c("Correcte" = "darkgray", "Incorrecte" = "darkred")) +
+    theme_minimal()
+  
+  print(p)
+}
+```
