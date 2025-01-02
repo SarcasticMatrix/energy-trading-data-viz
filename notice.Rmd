@@ -140,7 +140,7 @@ renouvelables <- data %>%
   pivot_longer(cols = -Adjusted, names_to = "Variable", values_to = "Valeur")
 
 plot_production_by_renouvelable <- ggplot(renouvelables, aes(x = Adjusted, y = Valeur, color = Variable)) +  
-  geom_point(shape=1, size=0.5, alpha=0.7) +
+  geom_point(shape=3, size=0.5, alpha=0.7,) +
   labs(x = "Prix ajusté [$]", y = "Production [kW]", color = "Variable") +
   scale_color_brewer(palette = "Set1") +
   theme_gray()
@@ -151,14 +151,14 @@ fossiles <- data %>%
   pivot_longer(cols = -Adjusted, names_to = "Variable", values_to = "Valeur")
 
 plot_production_by_combustibles <- ggplot(fossiles, aes(x = Adjusted, y = Valeur, color = Variable)) +  
-  geom_point(shape=1, size=0.5, alpha=0.7) +
+  geom_point(shape=3, size=0.5, alpha=0.7) +
   labs(x = "Prix ajusté [$]", y = "Production [kW]", color = "Variable") +
   scale_color_brewer(palette = "Set1") +
   theme_gray()
 
 # Prix du gaz VS Consommation totale 
 plot_consommation <- ggplot(data, aes(x = Adjusted, y = Consommation)) +  
-  geom_point(shape=1, size=0.5, alpha=0.7) +
+  geom_point(shape=3, size=0.5, alpha=0.7) +
   labs(x = "Prix ajusté [$]", y = "Consommation [kW]") +
   scale_color_brewer(palette = "Set1") +
   theme_gray()
