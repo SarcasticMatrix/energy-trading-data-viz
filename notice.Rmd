@@ -13,6 +13,9 @@ output:
     toc: yes
     toc_float:
       collapsed: no
+editor_options: 
+  markdown: 
+    wrap: sentence
 ---
 
 ```{r setup, include=FALSE}
@@ -34,9 +37,12 @@ library(caret)
 library(fastDummies)
 library(pROC)
 library(PRROC)
+library(gridExtra)
+library(patchwork)
 ```
 
-Nous nous concentrons sur la prédiction de la direction des flux commerciaux d'électricité entre la France et ses pays voisins, en nous limitant spécifiquement au cas de l'Allemagne. Cette étude s'inscrit dans l'objectif d'établir un arbitrage géographique, un aspect essentiel du trading d'électricité.
+Nous nous concentrons sur la prédiction de la direction des flux commerciaux d'électricité entre la France et ses pays voisins, en nous limitant spécifiquement au cas de l'Allemagne.
+Cette étude s'inscrit dans l'objectif d'établir un arbitrage géographique, un aspect essentiel du trading d'électricité.
 
 Lien du repo Github: <https://github.com/SarcasticMatrix/energy-trading-data-viz>
 
@@ -44,7 +50,13 @@ Lien du repo Github: <https://github.com/SarcasticMatrix/energy-trading-data-viz
 
 ## Données de prix de gaz
 
-On observe une explosion des prix du gaz (Future TTF) en 2022, principalement due aux difficultés des pays européens à se ravitailler en gaz naturel. Cette situation s'explique par la forte dépendance de l'Europe aux pipelines russes. Pour compenser, les pays européens ont dû se tourner vers le gaz naturel liquéfié (GNL), une solution nettement plus coûteuse. Le GNL implique un transport par tanker ainsi que des infrastructures spécifiques pour sa liquéfaction dans les ports de départ et sa regazéification dans les ports d'arrivée.
+On observe une explosion des prix du gaz (Future TTF) en 2022, principalement due aux difficultés des pays européens à se ravitailler en gaz naturel.
+Cette situation s'explique par la forte dépendance de l'Europe aux pipelines russes.
+Pour compenser, les pays européens ont dû se tourner vers le gaz naturel liquéfié (GNL), une solution nettement plus coûteuse.
+Le GNL implique un transport par tanker ainsi que des infrastructures spécifiques pour sa liquéfaction dans les ports de départ et sa regazéification dans les ports d'arrivée.
+
+On récupère les données journalières depuis `yahoo` en utilisant la bibliothèque `quantmod`.
+Ces données incluent le prix d'ouverture (`Open`), de clôture (`Close`), le prix maximum (`High`), le prix minimum (`Low`), le volume des échanges (`Volume`), ainsi que le prix ajusté (`Adjusted`).
 
 ```{r}
 getSymbols("NG=F", return.class = "data.frame", from="2021-01-01", to="2023-01-01")
@@ -52,7 +64,8 @@ data_ng = `NG=F`
 chartSeries(data_ng, theme = chartTheme('white'), type='line', name = 'Prix des Futures Gaz Naturel')
 ```
 
-En raison de son mix énergétique, la France est moins dépendante du gaz naturel, contrairement à des pays comme l'Allemagne ou les Pays-Bas. Par conséquent, l'explosion des prix du gaz a eu un impact relativement moindre en France comparé à d'autres nations européennes.
+En raison de son mix énergétique, la France est moins dépendante du gaz naturel, contrairement à des pays comme l'Allemagne ou les Pays-Bas.
+Par conséquent, l'explosion des prix du gaz a eu un impact relativement moindre en France comparé à d'autres nations européennes.
 
 ```{r}
 data_ng <- data.frame(data_ng)
@@ -61,9 +74,11 @@ names(data_ng) <- c("Open","High","Low","Close","Volume","Adjusted", "Date")
 data_ng %>% rmarkdown::paged_table()
 ```
 
-Les données de la variable Adjusted montrent une répartition où les prix médians (4.880€/MWh) et moyens (5.132€/MWh) sont relativement proches, indiquant une distribution plutôt symétrique. Cependant, l'étendue des valeurs, allant de 2.446€/MWh à 9.680€/MWh, suggère une certaine dispersion ou présence de valeurs élevées.
+Les données de la variable Adjusted montrent une répartition où les prix médians (4.880€/MWh) et moyens (5.132€/MWh) sont relativement proches, indiquant une distribution plutôt symétrique.
+Cependant, l'étendue des valeurs, allant de 2.446€/MWh à 9.680€/MWh, suggère une certaine dispersion ou présence de valeurs élevées.
 
-En ce qui concerne le volume, la moyenne (123,781) est légèrement supérieure à la médiane (117,789), ce qui pourrait indiquer une asymétrie vers les valeurs élevées. La plage de variation est importante, avec un minimum de 23,443 et un maximum de 338,968, suggérant une forte variabilité dans les volumes enregistrés.
+En ce qui concerne le volume, la moyenne (123,781) est légèrement supérieure à la médiane (117,789), ce qui pourrait indiquer une asymétrie vers les valeurs élevées.
+La plage de variation est importante, avec un minimum de 23,443 et un maximum de 338,968, suggérant une forte variabilité dans les volumes enregistrés.
 
 ```{r}
 summary(data_ng$Adjusted);summary(data_ng$Volume)
@@ -71,11 +86,26 @@ summary(data_ng$Adjusted);summary(data_ng$Volume)
 
 ## Données de RTE
 
-Les données exploitées proviennent de RTE, le gestionnaire du réseau de transport d'électricité en France, et incluent des informations sur la consommation et la production d'électricité. Cependant, il serait pertinent d'élargir l'analyse en intégrant des données de températures, qu'elles soient issues de prévisions ou d'observations actuelles, ainsi que des écarts passés entre ces deux mesures, afin de mieux comprendre leur impact sur la demande et l'offre.
+Les données exploitées proviennent de RTE, le gestionnaire du réseau de transport d'électricité en France, et incluent des informations sur la consommation et la production d'électricité.
+Cependant, il serait pertinent d'élargir l'analyse en intégrant des données de températures, qu'elles soient issues de prévisions ou d'observations actuelles, ainsi que des écarts passés entre ces deux mesures, afin de mieux comprendre leur impact sur la demande et l'offre.
 
-De plus, l'ajout de données provenant des marchés d'équilibrage pourrait enrichir l'analyse en capturant les ajustements nécessaires pour maintenir la stabilité du réseau. Il est également important de noter que seules les données du réseau français ont été utilisées Pour obtenir une vision plus complète, il serait judicieux d'intégrer également des données des réseaux allemand et belge.
+De plus, l'ajout de données provenant des marchés d'équilibrage pourrait enrichir l'analyse en capturant les ajustements nécessaires pour maintenir la stabilité du réseau.
+Il est également important de noter que seules les données du réseau français ont été utilisées Pour obtenir une vision plus complète, il serait judicieux d'intégrer également des données des réseaux allemand et belge.
 
 Les données sont disponibles ici [https://www.rte-france.com/eco2mix/telecharger-les-indicateurs](#0){.uri}.
+Nous récupérons plusieurs types de données, avec une fréquence de demi-heure :
+
+1.  La consommation nationale électrique, mesurée en MW.
+
+2.  La production nationale par moyen de production (Fioul, Charbon, Solaire, Nucléaire, etc.), également exprimée en MW.
+
+3.  La production et consommation par type de stockage (batterie, pompage, etc.), pour analyser les flux liés aux capacités de stockage.
+
+4.  Les flux physiques nets des échanges commerciaux, franco-allemands, franco-anglais, franco-espagnols, etc., mesurés en MW.
+
+5.  Le taux de CO2, qui mesure les émissions associées à la production électrique, en Mt.
+
+Toutes les données, à l'exception du taux de CO2, sont exprimées en MW, fournissant une base quantitative pour analyser les dynamiques du système électrique français.
 
 ```{r}
 data2022 <- data.frame(read.csv("data/RTE-2022.csv")) 
@@ -86,7 +116,9 @@ data_rte <- data_rte %>% select(-Périmètre, -Nature, -Prévision.J.1, -Prévis
 data_rte%>%rmarkdown::paged_table()
 ```
 
-Nous allons différencier les lignes en fonction des périodes de heures creuses et de heures pleines. Les heures creuses correspondent généralement aux plages horaires où la demande en électricité est plus faible, tandis que les heures pleines correspondent aux moments de la journée où la consommation est plus élevée. Cette distinction permet de mieux analyser les variations de la demande et de la production d’électricité en fonction des différents moments de la journée.
+Nous allons différencier les lignes en fonction des périodes de heures creuses et de heures pleines.
+Les heures creuses correspondent généralement aux plages horaires où la demande en électricité est plus faible, tandis que les heures pleines correspondent aux moments de la journée où la consommation est plus élevée.
+Cette distinction permet de mieux analyser les variations de la demande et de la production d’électricité en fonction des différents moments de la journée.
 
 ```{r}
 data_rte$Heure <- as.POSIXct(data_rte$Heure, format = "%H:%M")
@@ -100,7 +132,8 @@ data_rte$Heure <- ifelse(
 )
 ```
 
-il est important de prendre en compte non seulement les périodes de heures creuses et pleines, mais aussi les variations selon les saisons. Ces éléments peuvent avoir un impact significatif sur la demande et la production d’électricité dans chaque pays, ce qui influencera les décisions d’arbitrage.
+il est important de prendre en compte non seulement les périodes de heures creuses et pleines, mais aussi les variations selon les saisons.
+Ces éléments peuvent avoir un impact significatif sur la demande et la production d’électricité dans chaque pays, ce qui influencera les décisions d’arbitrage.
 
 Les saisons peuvent affecter différemment la production d’électricité, en fonction des ressources disponibles (comme l’hydroélectricité en hiver ou l’éolien en été), et la demande, notamment avec les pics de consommation en hiver en raison du chauffage ou en été avec la climatisation.
 
@@ -188,13 +221,20 @@ names(cor_dataframe) <- c("Moyen de production", "Adjusted", "High", "Low")
 cor_dataframe %>% rmarkdown::paged_table()
 ```
 
-On peut en effet observer que la corrélation entre le prix du gaz et la consommation de gaz semble nulle. Cela s'explique par le fait que la consommation d'électricité est souvent considérée comme inélastique. Autrement dit, la demande en électricité reste relativement stable, indépendamment des variations de prix du gaz. En conséquence, même lorsque le prix du gaz augmente, les producteurs d'électricité continuent de faire fonctionner leurs centrales à gaz pour répondre à la demande, car la consommation d'électricité ne baisse pas suffisamment pour rendre économiquement plus rentable de réduire leur production.
+On peut en effet observer que la corrélation entre le prix du gaz et la consommation de gaz semble nulle.
+Cela s'explique par le fait que la consommation d'électricité est souvent considérée comme inélastique.
+Autrement dit, la demande en électricité reste relativement stable, indépendamment des variations de prix du gaz.
+En conséquence, même lorsque le prix du gaz augmente, les producteurs d'électricité continuent de faire fonctionner leurs centrales à gaz pour répondre à la demande, car la consommation d'électricité ne baisse pas suffisamment pour rendre économiquement plus rentable de réduire leur production.
 
 Cette inélasticité de la demande en électricité, combinée au rôle essentiel du gaz dans la production d'électricité, explique pourquoi les producteurs n'hésitent pas à activer les centrales à gaz, même lorsque les prix du gaz sont élevés, ce qui peut atténuer la relation directe attendue entre le prix du gaz et sa consommation.
 
-La production d’électricité nucléaire montre une corrélation négative forte avec le prix ajusté (-0,78) ainsi qu’avec les valeurs maximale (-0,77) et minimale (-0,79) des futures gaz TTF. Cela s’explique par le fait que le nucléaire offre une production stable et à faible coût marginal, réduisant la dépendance aux sources énergétiques plus coûteuses comme le gaz. Ainsi, lorsque la production nucléaire est élevée, les besoins en gaz pour la production d’électricité diminuent, ce qui entraîne une baisse des prix sur les marchés de l’énergie.
+La production d’électricité nucléaire montre une corrélation négative forte avec le prix ajusté (-0,78) ainsi qu’avec les valeurs maximale (-0,77) et minimale (-0,79) des futures gaz TTF.
+Cela s’explique par le fait que le nucléaire offre une production stable et à faible coût marginal, réduisant la dépendance aux sources énergétiques plus coûteuses comme le gaz.
+Ainsi, lorsque la production nucléaire est élevée, les besoins en gaz pour la production d’électricité diminuent, ce qui entraîne une baisse des prix sur les marchés de l’énergie.
 
-Dans le cas de l’hydroélectricité, la corrélation modérément négative avec le prix ajusté (-0,44) ainsi qu’avec les valeurs maximale (-0,43) et minimale (-0,44) des futures gaz TTF peut s’expliquer par la flexibilité et le coût compétitif de cette source d’énergie. Lorsque la production hydraulique augmente, elle réduit la nécessité de recourir à des moyens de production plus coûteux, comme le gaz, ce qui exerce une pression à la baisse sur les prix de l’électricité. Cependant, cette corrélation est moins forte que pour le nucléaire, car la disponibilité de l’hydroélectricité dépend des conditions climatiques (comme le niveau des réservoirs ou des précipitations), ce qui limite son rôle stabilisateur dans certaines périodes.
+Dans le cas de l’hydroélectricité, la corrélation modérément négative avec le prix ajusté (-0,44) ainsi qu’avec les valeurs maximale (-0,43) et minimale (-0,44) des futures gaz TTF peut s’expliquer par la flexibilité et le coût compétitif de cette source d’énergie.
+Lorsque la production hydraulique augmente, elle réduit la nécessité de recourir à des moyens de production plus coûteux, comme le gaz, ce qui exerce une pression à la baisse sur les prix de l’électricité.
+Cependant, cette corrélation est moins forte que pour le nucléaire, car la disponibilité de l’hydroélectricité dépend des conditions climatiques (comme le niveau des réservoirs ou des précipitations), ce qui limite son rôle stabilisateur dans certaines périodes.
 
 ## Echange commerciaux
 
@@ -204,11 +244,72 @@ Quelques statistiques des échangs commerciaux électriques franco-allemands:
 summary(data$Ech..comm..Allemagne.Belgique)
 ```
 
-Les statistiques des échanges commerciaux électriques franco-allemands montrent une distribution intéressante des flux d'électricité entre la France et l'Allemagne. Le minimum est de -8027MW, ce qui indique un export net de la France vers l'Allemagne à ce moment-là. À l'inverse, le maximum de 9767MW représente un export net de l'Allemagne vers la France.
+Les statistiques des échanges commerciaux électriques franco-allemands montrent une distribution intéressante des flux d'électricité entre la France et l'Allemagne.
+Le minimum est de -8027MW, ce qui indique un export net de la France vers l'Allemagne à ce moment-là.
+À l'inverse, le maximum de 9767MW représente un export net de l'Allemagne vers la France.
 
-La médiane de 2316MW reflète un échange typique entre les deux pays, où la France exporte généralement vers l'Allemagne. La moyenne de 2011.6MW est relativement proche de la médiane, suggérant une certaine symétrie dans les échanges, mais avec une légère tendance à des exportations de la France vers l'Allemagne.
+La médiane de 2316MW reflète un échange typique entre les deux pays, où la France exporte généralement vers l'Allemagne.
+La moyenne de 2011.6MW est relativement proche de la médiane, suggérant une certaine symétrie dans les échanges, mais avec une légère tendance à des exportations de la France vers l'Allemagne.
 
-Les premiers quartiles (1er quartile à -190.2MW) et troisième quartiles (3e quartile à 4264.0MW) montrent la variabilité des flux, avec des périodes où l'échange est plutôt faible voire négatif, et d'autres où l'échange est fortement positif, avec des pics d'exportation. Ces valeurs témoignent de la flexibilité et des fluctuations des échanges commerciaux d'électricité en fonction des besoins de chaque pays.
+Les premiers quartiles (1er quartile à -190.2MW) et troisième quartiles (3e quartile à 4264.0MW) montrent la variabilité des flux, avec des périodes où l'échange est plutôt faible voire négatif, et d'autres où l'échange est fortement positif, avec des pics d'exportation.
+Ces valeurs témoignent de la flexibilité et des fluctuations des échanges commerciaux d'électricité en fonction des besoins de chaque pays.
+
+En effet, le graphique suivant montre l'évolution des échanges commerciaux franco-allemands nets entre 2021 et 2022, ainsi que la distribution de ces flux physiques.
+
+```{r}
+# Données et préparation
+data_echange <- data
+data_echange$Datetime <- as.POSIXct(paste(data_echange$Date, data_echange$Heures), format="%Y-%m-%d %H:%M")
+
+# Moyenne journalière
+data_echange_daily <- data_echange %>%
+  group_by(Date) %>%
+  summarise(Daily_Avg = mean(Ech..comm..Allemagne.Belgique, na.rm = TRUE))
+
+# Moyenne mensuelle
+data_echange_monthly <- data_echange %>%
+  mutate(Month = format(as.Date(Date), "%Y-%m")) %>%
+  group_by(Month) %>%
+  summarise(Monthly_Avg = mean(Ech..comm..Allemagne.Belgique, na.rm = TRUE))
+
+# Graphique principal
+main_plot <- ggplot(data=data_echange, mapping=aes(x=Datetime, y=Ech..comm..Allemagne.Belgique)) +
+  geom_point(size=0.1, color="darkblue") +
+  geom_step(data=data_echange_daily, mapping=aes(x=as.POSIXct(Date), y=Daily_Avg, color="Journalière"), size=0.8) +
+  geom_step(data=data_echange_monthly, mapping=aes(x=as.POSIXct(paste0(Month, "-01")), y=Monthly_Avg, color="Mensuelle"), size=0.8) + 
+  geom_hline(yintercept=0, linetype="dashed") +
+  labs(
+    x="Date",
+    y="Flux physique (MW)",
+    title="Echange commerciaux franco-allemands en 2021 et 2022",
+    subtitle="avec moyenne journalière et mensuelle",
+    color="Moyenne",
+  ) +
+  scale_x_datetime(
+    date_breaks = "4 month",  
+    labels = scales::date_format("%b %Y") 
+  ) +
+  theme_minimal() +
+  theme(legend.position="bottom")
+
+hist_plot <- ggplot(data_echange, aes(x=Ech..comm..Allemagne.Belgique)) +
+  geom_histogram(fill="darkblue", color="black", alpha=0.7, aes(y = ..density..), bins=25) +
+  geom_density(aes(y = ..density..), fill="skyblue", alpha=0.5) +  
+  coord_flip() + 
+  labs(
+    y="Densité",
+    x=''
+  ) +
+  theme_minimal() +
+  theme(axis.text.y = element_blank())
+
+main_plot + hist_plot + 
+  plot_layout(ncol = 2, widths = c(4, 1)) +  # Ajuster la largeur des graphiques
+  plot_annotation()
+```
+
+On peut observer un changement majeur après octobre 2021, où la France importe massivement de l'électricité d'Allemagne.
+Ce changement peut s'expliquer par les problèmes techniques rencontrés par EDF, l'entreprise possédant le plus grand parc de production d'électricité en France (et en Europe), notamment concernant son parc nucléaire.
 
 ```{r}
 data_nuclaire <- data
@@ -227,24 +328,25 @@ data_nuclaire_monthly <- data_nuclaire %>%
 
 ggplot(data=data_nuclaire, mapping=aes(x=Datetime, y=Nucléaire)) +
   geom_point(size=0.1, color="darkblue") +
-  geom_line(data=data_nuclaire_daily, mapping=aes(x=as.POSIXct(Date), y=Daily_Avg, color="Journalière"), size=0.8) +
+  geom_step(data=data_nuclaire_daily, mapping=aes(x=as.POSIXct(Date), y=Daily_Avg, color="Journalière"), size=0.8) +
   geom_step(data=data_nuclaire_monthly, mapping=aes(x=as.POSIXct(paste0(Month, "-01")), y=Monthly_Avg, color="Mensuelle"), size=0.8) + 
   labs(
     x="Date",
     y="Production Nucléaire (MW)",
     title="Production Nucléaire en 2021 et 2022",
     subtitle="avec moyenne journalière et mensuelle",
-    color="Période" 
+    color="Moyenne" 
   ) +
   scale_x_datetime(
     date_breaks = "4 month",  
     labels = scales::date_format("%b %Y") 
   ) +
   theme_minimal()
-
 ```
 
-À noter que la France est historiquement un pays exportateur net d'électricité, grâce à sa forte capacité de production, notamment nucléaire. Cependant, en 2022, des problèmes techniques sur ses centrales nucléaires ont significativement réduit sa production, obligeant le pays à importer davantage d'électricité. Cela se reflète dans les statistiques des échanges commerciaux avec l'Allemagne (la médiane et la moyenne des échanges sont positives, indiquant une prédominance des importations sur les exportations), ainsi que sur le graphique précédent, où l'on peut clairement voir la production nucléaire chuter en février 2022.
+À noter que la France est historiquement un pays exportateur net d'électricité, grâce à sa forte capacité de production, notamment nucléaire.
+Cependant, en 2022, des problèmes techniques sur ses centrales nucléaires ont significativement réduit sa production, obligeant le pays à importer davantage d'électricité.
+Cela se reflète dans les statistiques des échanges commerciaux avec l'Allemagne (la médiane et la moyenne des échanges sont positives, indiquant une prédominance des importations sur les exportations), ainsi que sur le graphique précédent, où l'on peut clairement voir la production nucléaire chuter en février 2022.
 
 ```{r}
 ggplot(
@@ -261,7 +363,11 @@ ggplot(
   theme(axis.text.y = element_text(size = 6))
 ```
 
-Le graphique montre la distribution horaire des échanges commerciaux d'électricité entre la France et l'Allemagne. Une tendance marquée d'importations françaises vers l'Allemagne est visible, avec des valeurs positives dominantes, surtout en heures creuses. En revanche, en heures pleines, les échanges tendent à s'équilibrer, avec des densités centrées autour de zéro, voire légèrement négatives, indiquant des exprotations de la France. La coloration rouge dans les queues révèle des variations plus importantes, signalant des périodes d’échanges extrêmes, potentiellement liées à des pics de demande ou de production. Ces fluctuations reflètent l'impact des rythmes de consommation et des capacités de production renouvelable.
+Le graphique montre la distribution horaire des échanges commerciaux d'électricité entre la France et l'Allemagne.
+Une tendance marquée d'importations françaises vers l'Allemagne est visible, avec des valeurs positives dominantes, surtout en heures creuses.
+En revanche, en heures pleines, les échanges tendent à s'équilibrer, avec des densités centrées autour de zéro, voire légèrement négatives, indiquant des exprotations de la France.
+La coloration rouge dans les queues révèle des variations plus importantes, signalant des périodes d’échanges extrêmes, potentiellement liées à des pics de demande ou de production.
+Ces fluctuations reflètent l'impact des rythmes de consommation et des capacités de production renouvelable.
 
 ```{r}
 ggplot(
@@ -279,7 +385,12 @@ ggplot(
 
 # Modèle
 
-Nous définissons un modèle XGBoost pour prédire uniquement le sens des échanges commerciaux et non leur valeur exacte (en MW). Cette simplification repose sur une distinction importante : si l'objectif était de prédire la valeur des flux en MW, il serait nécessaire de modéliser également notre participation active sur le marché, en tenant compte de notre rôle potentiel de "price maker" (influence directe sur les prix du marché) plutôt que de "price taker" (participant passif acceptant les prix du marché). En se concentrant sur la prédiction du sens des flux, nous adoptons une approche largement répandue parmi les praticiens, car elle permet d'optimiser des stratégies commerciales sans s'engager dans des modélisations plus complexes, souvent très sensibles aux incertitudes liées aux prix et volumes.
+Nous définissons un modèle XGBoost pour prédire uniquement le sens des échanges commerciaux et non leur valeur exacte (en MW).
+Cette simplification repose sur une distinction importante : si l'objectif était de prédire la valeur des flux en MW, il serait nécessaire de modéliser également notre participation active sur le marché, en tenant compte de notre rôle potentiel de "price maker" (influence directe sur les prix du marché) plutôt que de "price taker" (participant passif acceptant les prix du marché).
+En se concentrant sur la prédiction du sens des flux, nous adoptons une approche largement répandue parmi les praticiens, car elle permet d'optimiser des stratégies commerciales sans s'engager dans des modélisations plus complexes, souvent très sensibles aux incertitudes liées aux prix et volumes.
+
+Nous nous plaçons dans un cadre réaliste où nous considérons que nous ne disposons pas des données relatives aux échanges commerciaux actuels de la France avec les autres pays.
+Il en va de même pour la variable des exportations nettes de la France (`Ech. physiques`).
 
 ```{r}
 colonnes_a_exclure <- c("Ech..comm..Angleterre",
@@ -296,7 +407,9 @@ Y <- data[, "Ech..comm..Allemagne.Belgique", drop = FALSE]
 Y$Ech..comm..Allemagne.Belgique <- ifelse(Y$Ech..comm..Allemagne.Belgique > 0, 1, 0)
 ```
 
-Un Y positif indique que la France importe de l’électricité depuis l’Allemagne, et réciproquement, un Y négatif signifie que la France exporte de l’électricité vers l’Allemagne. Dans notre modèle, nous attribuons la valeur 1 lorsque la France exporte vers l’Allemagne, et 0 dans les autres cas (notamment lorsqu’elle importe). Cette codification binaire permet de simplifier la tâche de classification en se concentrant uniquement sur la direction des flux commerciaux.
+Un Y positif indique que la France importe de l’électricité depuis l’Allemagne, et réciproquement, un Y négatif signifie que la France exporte de l’électricité vers l’Allemagne.
+Dans notre modèle, nous attribuons la valeur 1 lorsque la France exporte vers l’Allemagne, et 0 dans les autres cas (notamment lorsqu’elle importe).
+Cette codification binaire permet de simplifier la tâche de classification en se concentrant uniquement sur la direction des flux commerciaux.
 
 ## Train et Test
 
@@ -351,6 +464,23 @@ grid <- expand.grid(
 
 ## Cross-Validation
 
+Le Boosting repose sur un principe clé : minimiser une fonction de perte $\mathcal{L}(y, \hat{y})$ en combinant les prédictions de plusieurs modèles faibles $h_t(x)$.
+À chaque itération $t$, un nouveau modèle est ajouté pour corriger les erreurs des modèles précédents.
+La prédiction finale est une combinaison pondérée de tous les modèles :
+
+$$
+\hat{y} = \sum_{t=1}^T \alpha_t h_t(x),
+$$
+où $\alpha_t$ représente le poids attribué au modèle $h_t(x)$ en fonction de sa performance.
+Dans le cas de XGBoost, l'algorithme minimise une fonction objective qui combine la fonction de perte $\mathcal{L}$ avec un terme de régularisation $\Omega$ pour éviter le surapprentissage :
+
+$$
+\text{Obj} = \sum_{i=1}^n \mathcal{L}(y_i, \hat{y}_i) + \sum_{t=1}^T \Omega(h_t),
+$$
+
+Le terme de régularisation $\Omega(h_t)$ contrôle la complexité des arbres et favorise la généralisation.
+Cette approche garantit une meilleure performance tout en limitant le risque de surapprentissage.
+
 ```{r}
 library(xgboost)
 xgb_model <- train(
@@ -399,6 +529,11 @@ predictions_class <- as.factor(ifelse(probabilities > 0.7, 1, 0))
 confusionMatrix(predictions_class, as.factor(Y_test$Ech..comm..Allemagne.Belgique))
 ```
 
+La matrice de confusion montre une performance globalement satisfaisante du modèle.
+Sur un total de 7 243 observations, le modèle a correctement prédit 1788 cas où la classe est 0 (précision pour la classe 0) et 4930 cas où la classe est 1 (précision pour la classe 1).
+Cependant, il existe 438 faux négatifs (classe réelle 1 prédit comme 0) et 87 faux positifs (classe réelle 0 prédit comme 1), indiquant que le modèle a une légère tendance à mieux prédire la classe 1 (i.e. quand la France exporte) que la classe 0 (quand la France importe).
+Le modèle est satisfaisant.
+
 ## Courbe ROC
 
 ```{r}
@@ -427,7 +562,9 @@ ggplot(roc_data, aes(x = FPR, y = TPR)) +
   )
 ```
 
-On obtient une courbe ROC avec un AUC d’environ 0.99, ce qui témoigne de bonne performance prédictive du modèle. Un AUC proche de 1 indique que le modèle est capable de discriminer efficacement entre les classes positives et négatives, avec un très faible taux de faux positifs et un taux élevé de vrais positifs. Cette précision est particulièrement prometteuse dans le cadre de la prévision des flux commerciaux, car elle suggère que le modèle peut fournir des prédictions fiables, un atout crucial pour déterminer des arbitrages géographiques.
+On obtient une courbe ROC avec un AUC d’environ 0.99, ce qui témoigne de bonne performance prédictive du modèle.
+Un AUC proche de 1 indique que le modèle est capable de discriminer efficacement entre les classes positives et négatives, avec un très faible taux de faux positifs et un taux élevé de vrais positifs.
+Cette précision est particulièrement prometteuse dans le cadre de la prévision des flux commerciaux, car elle suggère que le modèle peut fournir des prédictions fiables, un atout crucial pour déterminer des arbitrages géographiques.
 
 On détermine maitenant le treshold optimale pour maximiser l'accuracy.
 
@@ -549,7 +686,8 @@ xgb.plot.importance(importance)
 
 1.  Variables les plus influentes :
 
-    -   Consommation est de loin la variable la plus déterminante, reflétant l'impact direct de la demande énergétique sur les échanges commerciaux. Une forte consommation en France ou en Allemagne peut inverser les flux commerciaux.
+    -   Consommation est de loin la variable la plus déterminante, reflétant l'impact direct de la demande énergétique sur les échanges commerciaux.
+        Une forte consommation en France ou en Allemagne peut inverser les flux commerciaux.
 
     -   Nucléaire et Hydraulique (fil de l'eau/éclusée) jouent également un rôle clé, soulignant l'influence des sources de production électrique stables ou renouvelables sur les exportations et importations.
 
@@ -594,9 +732,14 @@ ggplot(top_10_data_long, aes(x = Value, y = Ech_comm_Allemagne_Belgique, color =
   theme(legend.position = "bottom")
 ```
 
-A priori, le modèle a l'air de se tromper de sens plus souvent sur les petites valeurs du flux d'électricité dans le câble. Cela serait plutôt logique, car les deux zones électriques sont déjà en équilibre avant même de faire jouer les interconnexions entre la zone française et belgo-allemande. Dans ce cas, les variations de flux sont faibles et peuvent être davantage influencées par des facteurs aléatoires ou des incertitudes dans les données d'entrée, rendant la prédiction plus difficile. Cela suggère que le modèle pourrait bénéficier d'une meilleure prise en compte des dynamiques spécifiques à ces situations d'équilibre.
+A priori, le modèle a l'air de se tromper de sens plus souvent sur les petites valeurs du flux d'électricité dans le câble.
+Cela serait plutôt logique, car les deux zones électriques sont déjà en équilibre avant même de faire jouer les interconnexions entre la zone française et belgo-allemande.
+Dans ce cas, les variations de flux sont faibles et peuvent être davantage influencées par des facteurs aléatoires ou des incertitudes dans les données d'entrée, rendant la prédiction plus difficile.
+Cela suggère que le modèle pourrait bénéficier d'une meilleure prise en compte des dynamiques spécifiques à ces situations d'équilibre.
 
-Peut-être aussi que le modèle se trompe plus souvent en fonction de modalités spécifiques de production, comme une forte proportion d'énergies renouvelables dans le mix énergétique. Ces modalités peuvent être influencées par des conditions particulières qui varient selon le moment de la journée (par exemple, la production solaire est maximale en milieu de journée) ou selon la saison (les énergies éoliennes étant plus importantes en hiver dans certaines régions). Cela suggère qu'une analyse approfondie des erreurs du modèle pourrait révéler des biais liés à ces variations temporelles et saisonnières, et orienter des pistes d'amélioration, comme l'intégration d'indicateurs supplémentaires ou une segmentation des données pour mieux refléter ces dynamiques.
+Peut-être aussi que le modèle se trompe plus souvent en fonction de modalités spécifiques de production, comme une forte proportion d'énergies renouvelables dans le mix énergétique.
+Ces modalités peuvent être influencées par des conditions particulières qui varient selon le moment de la journée (par exemple, la production solaire est maximale en milieu de journée) ou selon la saison (les énergies éoliennes étant plus importantes en hiver dans certaines régions).
+Cela suggère qu'une analyse approfondie des erreurs du modèle pourrait révéler des biais liés à ces variations temporelles et saisonnières, et orienter des pistes d'amélioration, comme l'intégration d'indicateurs supplémentaires ou une segmentation des données pour mieux refléter ces dynamiques.
 
 ```{r}
 erreurs <- X_test[X_test$Prediction_Status == "Incorrecte", ]
@@ -627,11 +770,17 @@ ggplot(
   theme(axis.text.y = element_text(size = 6))
 ```
 
-Les erreurs dans le modèle sont largement dominées par les heures creuses, représentant 84 % des erreurs, tandis que seulement 16 % des erreurs surviennent pendant les heures pleines. Cela pourrait suggérer que le modèle a plus de difficulté à prédire avec précision pendant les heures creuses.
+Les erreurs dans le modèle sont largement dominées par les heures creuses, représentant 84 % des erreurs, tandis que seulement 16 % des erreurs surviennent pendant les heures pleines.
+Cela pourrait suggérer que le modèle a plus de difficulté à prédire avec précision pendant les heures creuses.
 
-En heures creuses, la demande d'électricité est souvent plus stable et plus faible, ce qui réduit la variabilité du flux d'électricité. Le modèle, en raison de la grande variabilité et de la large plage de valeurs dans les données, n'est pas conçu pour capturer efficacement ces périodes de faible activité. Ainsi, il peut éprouver des difficultés à prédire avec précision les fluctuations mineures. Le modèle tend à se concentrer davantage sur les périodes de forte demande, où les variations sont plus marquées et où les échanges commerciaux sont plus tranchés, ce qui rend la prédiction plus facile et plus précise.
+En heures creuses, la demande d'électricité est souvent plus stable et plus faible, ce qui réduit la variabilité du flux d'électricité.
+Le modèle, en raison de la grande variabilité et de la large plage de valeurs dans les données, n'est pas conçu pour capturer efficacement ces périodes de faible activité.
+Ainsi, il peut éprouver des difficultés à prédire avec précision les fluctuations mineures.
+Le modèle tend à se concentrer davantage sur les périodes de forte demande, où les variations sont plus marquées et où les échanges commerciaux sont plus tranchés, ce qui rend la prédiction plus facile et plus précise.
 
-En soi, le fait que le modèle se trompe plus souvent en heures creuses n’a pas de conséquences majeures d’un point de vue opérationnel. En effet, le prix du MWh sur les marchés électriques est généralement beaucoup plus élevé en heures pleines qu’en heures creuses, rendant les erreurs moins coûteuses en termes financiers durant ces périodes. Cependant, cette limitation reste une piste d’amélioration..
+En soi, le fait que le modèle se trompe plus souvent en heures creuses n’a pas de conséquences majeures d’un point de vue opérationnel.
+En effet, le prix du MWh sur les marchés électriques est généralement beaucoup plus élevé en heures pleines qu’en heures creuses, rendant les erreurs moins coûteuses en termes financiers durant ces périodes.
+Cependant, cette limitation reste une piste d’amélioration..
 
 Comme le montre clairement le graphique suivant, la distribution des échanges commerciaux pour lesquels le modèle se trompe est nettement plus centrée et regroupée autour de zéro.
 
@@ -650,22 +799,128 @@ ggplot(data_hist, aes(x = Value, fill = Prediction_Status, color = Prediction_St
   geom_histogram(aes(y = ..density..), alpha = 0.1, position = "identity", bins = 30) +
   geom_density(alpha = 0.5, size = 1) +
   geom_vline(xintercept = mean_incorrecte, color = "darkred", linetype = "dotted", size = 1) +
-  geom_vline(xintercept = mean_correcte, color = "darkblue", linetype = "dotted", size = 1) +
-  scale_fill_manual(values = c("Incorrecte" = "darkred", "Correcte" = "darkblue")) +
-  scale_color_manual(values = c("Incorrecte" = "darkred", "Correcte" = "darkblue")) +
+  geom_vline(xintercept = mean_correcte, color = "darkgray", linetype = "dotted", size = 1) +
+  scale_fill_manual(values = c("Incorrecte" = "darkred", "Correcte" = "darkgray")) +
+  scale_color_manual(values = c("Incorrecte" = "darkred", "Correcte" = "darkgray")) +
   labs(title = "Comparaison des distributions avec histogrammes et KDE",
-       x = "Ech. comm. Allemagne-Belgique [MW]",
+       x = "Echange Commerciaux [MW]",
        y = "Densité") +
   theme_minimal()
 ```
+Du point de vue temporel, il est toujours intéressant de visualiser quand le modèle s'est trompé. Selon le graphique ci-dessous, il semble que le modèle ait fait plus d'erreurs en juin et février 2021, en prédisant que la France exporterait vers l'Allemagne alors qu'en réalité elle a importé. On observe clairement que la moyenne des échanges commerciaux, là où le modèle s'est trompé, est positive, ce qui confirme les résultats du graphique précédent.
+```{r}
+X_test$Datetime <- as.POSIXct(paste(X_test$Date, X_test$Heures), format="%Y-%m-%d %H:%M")
+
+ggplot(data=X_test, 
+       mapping=aes(x=Datetime, y=Ech..comm..Allemagne.Belgique, color=Prediction_Status)) +
+  geom_point(data = subset(X_test, Prediction_Status == "Correcte"), alpha = 0.1, size=0.5) + 
+  geom_point(data = subset(X_test, Prediction_Status == "Incorrecte"), alpha = 0.5, size=0.5) +
+  geom_hline(yintercept=0, linetype="dashed") +
+  labs(
+    y="Flux physique (MW)",
+    x="Date",
+    title="Echange commerciaux franco-allemands en 2021 et 2022",
+    subtitle="avec les prédictions correctes et fausses"
+  ) +
+  scale_color_manual(values = c("Correcte" = "darkgray", "Incorrecte" = "darkred")) +
+  scale_x_datetime(
+    date_breaks = "4 month",  
+    labels = scales::date_format("%b %Y") 
+  ) +
+  theme_minimal() +
+  theme(legend.position="bottom")
+```
+Nous avons intuité et confirmé précédemment que le modèle se trompait lorsque les échanges commerciaux é"taient proches de 0. Nous souhaitons maintenant regarder si les erreurs ont un lien avec la variance journalière.
+
+```{r}
+daily_variance <- X_test %>%
+  mutate(Date = as.Date(Datetime)) %>%
+  group_by(Date) %>%
+  summarise(Daily_Variance = var(Ech..comm..Allemagne.Belgique, na.rm = TRUE))
+
+X_test_with_variance <- X_test %>%
+  mutate(Date = as.Date(Datetime)) %>%
+  left_join(daily_variance, by = "Date")
+
+ggplot(data=X_test_with_variance, mapping=aes(x=Daily_Variance, 
+                                    y=Ech..comm..Allemagne.Belgique, 
+                                    color=Prediction_Status)) +
+  # Ajouter le contour plot pour les prédictions Incorrectes
+  stat_density_2d(
+    data = X_test_with_variance[X_test_with_variance$Prediction_Status == "Incorrecte",],
+    geom = "raster",
+    aes(fill = ..count..),
+    contour = FALSE
+  ) + scale_fill_viridis_c() +
+  scale_color_manual(values = c("Correcte" = "darkblue", "Incorrecte" = "red")) + 
+  
+  labs(
+    x="Variance journalière (GW²)",
+    y="Flux physique (GW)",
+    title="Relation entre la variance journalière et les échanges commerciaux",
+    subtitle="Prédiction du modèle incorrecte"
+  ) +
+  theme_minimal() +
+  theme(legend.position="bottom")
+```
+Ainsi, on observe que les erreurs du modèle se produisent principalement lorsque la variance journalière des échanges est faible. Cela confirme que les erreurs se concentrent lorsque les échanges sont proches de zéro.
+
+Nous pouvons réaliser une analyse similaire en calculant la variance des échanges commerciaux, mais cette fois en fonction des plages horaires, à savoir les heures "pleines" et "creuses". Plutôt que de prendre en compte la variance sur une journée complète, nous allons segmenter les données par ces deux périodes spécifiques de la journée. Cela nous permettra d'examiner si les erreurs du modèle sont plus fréquentes durant l'une ou l'autre de ces plages horaires pour chaque journée.
+
+```{r}
+# Ajouter une colonne "Half_Day" en fonction des heures
+X_test_with_variance <- X_test %>%
+  mutate(Half_Day = ifelse(as.numeric(format(Datetime, "%H")) >= 8 & as.numeric(format(Datetime, "%H")) < 20, "Pleine", "Creuse")) %>%
+  mutate(Date = as.Date(Datetime))  # Garder la date
+
+half_day_variance <- X_test_with_variance %>%
+  group_by(Date, Half_Day) %>%
+  summarise(Half_Day_Variance = var(Ech..comm..Allemagne.Belgique, na.rm = TRUE) / 10^6)
+
+# Joindre les variances calculées au jeu de données principal
+X_test_with_variance <- X_test_with_variance %>%
+  left_join(half_day_variance, by = c("Date", "Half_Day"))
+
+# Visualisation avec la variance par demi-journée
+ggplot(data=X_test_with_variance, mapping=aes(x=Half_Day_Variance, 
+                                              y=Ech..comm..Allemagne.Belgique, 
+                                              color=Prediction_Status)) +
+  stat_density_2d(
+    data = X_test_with_variance[X_test_with_variance$Prediction_Status == "Incorrecte",],
+    geom = "raster",
+    aes(fill = ..count..),
+    contour = FALSE
+  ) +
+  scale_fill_viridis_c() + 
+
+  # Ajouter les labels
+  labs(
+    x="Variance par demi-journée (GW²)",  
+    y="Flux physique (MW)",
+    title="Relation entre la variance par demi-journée et les échanges commerciaux",
+    subtitle="Prédictions incorrectes du modèle"
+  ) +
+  theme_minimal() + 
+  theme(legend.position="bottom")
+```
+Cela n'a pas apporté de changement significatif – ce n'est pas très utile. Toutes les variances ont diminué, ce qui est plutôt logique, car les échanges varient généralement moins au cours d'une plage horaire (pendant les heures creuses ou pleines d'une journée) que sur l'ensemble de la journée.
 
 # Conclusion et extensions
 
-Pour conclure, le modèle montre des performances tout à fait satisfaisantes, même sans disposer de la quantité idéale de données qui pourrait améliorer encore ses prédictions. Cependant, nous avons constaté une limitation notable : le modèle ne parvient pas à bien prédire lorsque les échanges commerciaux sont proches de zéro. Cela peut s'expliquer par l'absence de signaux clairs dans ces situations, où les flux sont instables ou équilibrés, rendant la classification plus difficile. Pour remédier à ce problème, il serait pertinent d'enrichir les données avec des variables supplémentaires susceptibles de capturer les dynamiques de marché autour de ces valeurs faibles.
+Pour conclure, le modèle montre des performances tout à fait satisfaisantes, même sans disposer de la quantité idéale de données qui pourrait améliorer encore ses prédictions.
+Cependant, nous avons constaté une limitation notable : le modèle ne parvient pas à bien prédire lorsque les échanges commerciaux sont proches de zéro.
+Cela peut s'expliquer par l'absence de signaux clairs dans ces situations, où les flux sont instables ou équilibrés, rendant la classification plus difficile.
+Pour remédier à ce problème, il serait pertinent d'enrichir les données avec des variables supplémentaires susceptibles de capturer les dynamiques de marché autour de ces valeurs faibles.
 
-Ainsi, pour améliorer les performances du modèle, notamment durant les heures creuses, il serait essentiel de disposer d’un volume de données plus important. Les premières données à intégrer devraient être celles du marché allemand. Ensuite, il serait pertinent d’ajouter des prévisions sur des variables clés telles que la consommation, les productions et la température. Enfin, l’intégration des erreurs passées des prévisions permettrait au modèle de mieux appréhender les incertitudes et les biais, ce qui pourrait significativement améliorer la précision dans les situations où les échanges sont proches de zéro.
+Ainsi, pour améliorer les performances du modèle, notamment durant les heures creuses, il serait essentiel de disposer d’un volume de données plus important.
+Les premières données à intégrer devraient être celles du marché allemand.
+Ensuite, il serait pertinent d’ajouter des prévisions sur des variables clés telles que la consommation, les productions et la température.
+Enfin, l’intégration des erreurs passées des prévisions permettrait au modèle de mieux appréhender les incertitudes et les biais, ce qui pourrait significativement améliorer la précision dans les situations où les échanges sont proches de zéro.
 
-On pourrait également intégrer des données de marchés pour affiner encore davantage les prédictions. Ces données incluraient les prix et volumes des marchés intraday, day-ahead, ainsi que ceux des marchés d'ajustement. Ces informations seraient accompagnées de leurs prévisions associées et des erreurs passées sur ces prévisions. Cela permettrait au modèle de mieux capturer les dynamiques de prix et d'offre/demande en temps réel, ainsi que d’identifier les écarts entre attentes et réalité.
+On pourrait également intégrer des données de marchés pour affiner encore davantage les prédictions.
+Ces données incluraient les prix et volumes des marchés intraday, day-ahead, ainsi que ceux des marchés d'ajustement.
+Ces informations seraient accompagnées de leurs prévisions associées et des erreurs passées sur ces prévisions.
+Cela permettrait au modèle de mieux capturer les dynamiques de prix et d'offre/demande en temps réel, ainsi que d’identifier les écarts entre attentes et réalité.
 
 # Annexe
 
